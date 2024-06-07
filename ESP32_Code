@@ -1,0 +1,487 @@
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+#include <Wire.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 128
+#define OLED_ADDR 0x3C
+#define JOYSTICK_X 25
+#define JOYSTICK_Y 26
+#define BUTTON_PIN 32
+#define SNAKE_MAX_LENGTH 300
+#define SNAKE_SIZE 4
+
+// Brick Breaker game settings
+#define PADDLE_WIDTH 16
+#define PADDLE_HEIGHT 2
+#define BALL_SIZE 2
+#define BRICK_ROWS 4
+#define BRICK_COLS 8
+#define BRICK_WIDTH 12
+#define BRICK_HEIGHT 4
+#define BRICK_PADDING 2
+#define BRICKS_COUNT BRICK_ROWS * BRICK_COLS
+
+const int JOYSTICK_CENTER = 2048;  // Midpoint of the joystick range (assuming 0-4095)
+const int JOYSTICK_DEADZONE = 200;
+struct Point {
+  int x;
+  int y;
+};
+Adafruit_SH1107 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+Point snake[SNAKE_MAX_LENGTH];
+int snakeLength = 5;
+Point food;
+int foodEaten = 0;
+int xDir = 1;
+int yDir = 0;
+int menuItemSelected = 0; // Variable to track the selected menu item
+unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 200; // Increase to make button presses more deliberate
+bool inMenu = true; // Flag to track if we're currently displaying the menu
+
+Point cursor = {SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2}; // Cursor starts at the center of the screen
+bool isDrawing = false; // Toggle drawing on and off
+
+struct Ball {
+    float x, y; // Using float for smoother movement
+    float dx, dy;
+};
+
+struct Brick {
+    int x, y;
+    bool active;
+};
+
+Ball ball;
+Point paddle;
+Brick bricks[BRICKS_COUNT];
+
+static const unsigned char PROGMEM eyeBitmap[] = {
+    0b00000111, 0b11000000,
+    0b00001111, 0b11100000,
+    0b00011111, 0b11110000,
+    0b00111111, 0b11111000,
+    0b00111111, 0b11111000,
+    0b01111111, 0b11111100,
+    0b01111111, 0b11111100,
+    0b01111111, 0b11111100,
+    0b01111111, 0b11111100,
+    0b01111111, 0b11111100,
+    0b01111111, 0b11111100,
+    0b00111111, 0b11111000,
+    0b00111111, 0b11111000,
+    0b00011111, 0b11110000,
+    0b00001111, 0b11100000,
+    0b00000111, 0b11000000
+};
+
+
+static const unsigned char PROGMEM smileBitmap[] = {
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 1-4
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 5-8
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 9-12
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 13-16
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 17-20
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 21-24
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 25-28
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 29-32
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 33-36
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 37-40
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 41-44
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 45-48
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Rows 49-52
+    0b00011111, 0b11000000, 0b00000011, 0b11111000, // Row 53
+    0b01111111, 0b11110000, 0b00001111, 0b11111110, // Row 54
+    0b11111111, 0b11111111, 0b11111111, 0b11111111, // Row 55
+    0b11111111, 0b11111111, 0b11111111, 0b11111111, // Row 56
+    0b01111111, 0b11111111, 0b11111111, 0b11111110, // Row 57
+    0b00001111, 0b11111111, 0b11111111, 0b11110000, // Row 58
+    0b00000000, 0b11111111, 0b11111111, 0b00000000, // Row 59
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000, // Row 60-64
+};
+
+void initializeBrickBreaker() {
+    // Initialize paddle
+    paddle.x = (SCREEN_WIDTH / 2) - (PADDLE_WIDTH / 2);
+    paddle.y = SCREEN_HEIGHT - 10;
+    
+    // Initialize ball
+    ball.x = SCREEN_WIDTH / 2;
+    ball.y = paddle.y - 10;
+    ball.dx = 1.5;
+    ball.dy = -1.5;
+
+    // Initialize bricks
+    for (int i = 0; i < BRICK_ROWS; i++) {
+        for (int j = 0; j < BRICK_COLS; j++) {
+            int idx = i * BRICK_COLS + j;
+            bricks[idx].x = j * (BRICK_WIDTH + BRICK_PADDING) + 10;
+            bricks[idx].y = i * (BRICK_HEIGHT + BRICK_PADDING) + 10;
+            bricks[idx].active = true;
+        }
+    }
+}
+
+void updateBrickBreaker() {
+    // Move ball
+    ball.x += ball.dx;
+    ball.y += ball.dy;
+
+    // Wall collision (left, right, top)
+    if (ball.x <= 0 || ball.x >= SCREEN_WIDTH - BALL_SIZE) ball.dx *= -1;
+    if (ball.y <= 0) ball.dy *= -1;
+
+    // Paddle collision
+    if (ball.y >= paddle.y - BALL_SIZE && ball.x >= paddle.x && ball.x <= paddle.x + PADDLE_WIDTH) {
+        ball.dy *= -1;
+    }
+
+    // Bottom wall (lose condition)
+    if (ball.y >= SCREEN_HEIGHT - BALL_SIZE) {
+        // Reset game or end game
+        ball.x = SCREEN_WIDTH / 2;
+        ball.y = paddle.y - 10;
+        ball.dy *= -1;
+    }
+
+    // Bricks collision
+    for (int i = 0; i < BRICKS_COUNT; i++) {
+        if (bricks[i].active && ball.x + BALL_SIZE >= bricks[i].x && ball.x <= bricks[i].x + BRICK_WIDTH &&
+            ball.y + BALL_SIZE >= bricks[i].y && ball.y <= bricks[i].y + BRICK_HEIGHT) {
+            bricks[i].active = false; // Deactivate the brick
+            ball.dy *= -1; // Reflect the ball
+            break;
+        }
+    }
+}
+void drawBrickBreaker() {
+    display.clearDisplay();
+
+    // Draw paddle
+    display.fillRect(paddle.x, paddle.y, PADDLE_WIDTH, PADDLE_HEIGHT, SH110X_WHITE);
+
+    // Draw ball
+    display.fillCircle(ball.x, ball.y, BALL_SIZE, SH110X_WHITE);
+
+    // Draw bricks
+    for (int i = 0; i < BRICKS_COUNT; i++) {
+        if (bricks[i].active) {
+            display.fillRect(bricks[i].x, bricks[i].y, BRICK_WIDTH, BRICK_HEIGHT, SH110X_WHITE);
+        }
+    }
+
+    display.display();
+}
+
+
+
+void setup() {
+  pinMode(JOYSTICK_X, INPUT);
+  pinMode(JOYSTICK_Y, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  display.begin(OLED_ADDR, true);
+  display.clearDisplay();
+  randomSeed(analogRead(0));
+  showMenu();
+}
+
+void loop() {
+  if (inMenu) {
+    // Menu interaction logic
+    handleMenu();
+  } else {
+    // Game interaction logic
+    handleGame();
+  }
+}
+
+void handleMenu() {
+  int joyX = analogRead(JOYSTICK_X);
+  int buttonState = digitalRead(BUTTON_PIN);
+
+  // Navigate menu
+  if (joyX < 1800 && millis() - lastDebounceTime > debounceDelay) {
+    menuItemSelected = (menuItemSelected + 1) % 4; // Toggle menu item selection among 4 options
+    lastDebounceTime = millis();
+    showMenu();
+  }
+
+  // Select menu option
+  if (buttonState == LOW && millis() - lastDebounceTime > debounceDelay) {
+    lastDebounceTime = millis();
+    switch (menuItemSelected) {
+      case 0: // Snake game
+        inMenu = false; // Exit menu to start Snake game
+        startGame();
+        break;
+      case 1: // Bmo face
+        drawBmoFace();
+        break;
+      case 2: // Brick Breaker game
+        inMenu = false;
+        initializeBrickBreaker(); // Initialize Brick Breaker game components
+        break;
+      case 3: // Drawing
+        inMenu = false;
+        drawDrawing();
+        break;
+    }
+  }
+}
+
+void handleGame() {
+  int buttonState = digitalRead(BUTTON_PIN);
+  
+  // Only check for button press to return to menu if NOT in Drawing game
+  if (menuItemSelected != 3) { // Check if the current game is not the Drawing game
+    if (buttonState == LOW && millis() - lastDebounceTime > debounceDelay) {
+      lastDebounceTime = millis();
+      inMenu = true;
+      showMenu();
+      return;
+    }
+  }
+
+  // If not in menu, continue with game logic
+  if (!inMenu) {
+    switch (menuItemSelected) {
+      case 0: // Snake game
+        moveSnake();
+        drawGame();
+        delay(200 - (foodEaten * 5));
+        break;
+      case 2: // Brick Breaker game
+        display.setRotation(3);
+        handlePaddleMovement();
+        updateBrickBreaker();
+        drawBrickBreaker();
+        break;
+      case 3:
+        updateDrawing(); // Continue updating drawing without allowing exit via button press
+        break;
+    }
+  }
+}
+
+void handlePaddleMovement() {
+  int joyX = analogRead(JOYSTICK_X);
+  int joyY = analogRead(JOYSTICK_Y);
+
+  // Map the joystick input to paddle movement
+  int paddleSpeed = 2; // Adjust paddle speed as needed
+  if (joyY < 1800) {
+    paddle.x -= paddleSpeed; // Move left
+  } else if (joyY > 2300) {
+    paddle.x += paddleSpeed; // Move right
+  }
+
+  // Ensure the paddle doesn't move out of screen bounds
+  if (paddle.x < 0) {
+    paddle.x = 0;
+  } else if (paddle.x > SCREEN_WIDTH - PADDLE_WIDTH) {
+    paddle.x = SCREEN_WIDTH - PADDLE_WIDTH;
+  }
+}
+void drawBmoFace() {
+  
+    display.clearDisplay();
+    display.setTextColor(SH110X_WHITE);
+    display.setTextSize(1);
+    display.setRotation(3);
+
+    display.drawBitmap(20, 30, eyeBitmap, 16, 16, SH110X_WHITE);
+    display.drawBitmap(90, 30, eyeBitmap, 16, 16, SH110X_WHITE);
+    display.drawBitmap(46, 64, smileBitmap, 32, 32, SH110X_WHITE);
+
+    // Optionally, add text or additional elements below
+    
+    display.display();
+}
+
+void showMenu() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  display.setRotation(3); // Rotate the display 90 degrees clockwise
+
+  switch(menuItemSelected) {
+    case 0:
+      display.setCursor(0, 0);
+      display.print("Snake <--");
+      display.setCursor(0, 15);
+      display.print("Bmo");
+      display.setCursor(0, 30);
+      display.print("Brick Breaker");
+      display.setCursor(0, 45);
+      display.print("Drawing");
+      break;
+    case 1:
+      display.setCursor(0, 0);
+      display.print("Snake");
+      display.setCursor(0, 15);
+      display.print("Bmo <--");
+      display.setCursor(0, 30);
+      display.print("Brick Breaker");
+      display.setCursor(0, 45);
+      display.print("Drawing");
+      break;
+    case 2:
+      display.setCursor(0, 0);
+      display.print("Snake");
+      display.setCursor(0, 15);
+      display.print("Bmo");
+      display.setCursor(0, 30);
+      display.print("Brick Breaker <--");
+      display.setCursor(0, 45);
+      display.print("Drawing");
+      break;
+    case 3:
+      display.setCursor(0, 0);
+      display.print("Snake");
+      display.setCursor(0, 15);
+      display.print("Bmo");
+      display.setCursor(0, 30);
+      display.print("Brick Breaker");
+      display.setCursor(0, 45);
+      display.print("Drawing <--");
+      break;
+  }
+  display.display();
+  display.setRotation(0); // Reset rotation for normal game display
+}
+
+void startGame() {
+  display.clearDisplay();
+  snakeLength = 5;
+  for (int i = 0; i < snakeLength; i++) {
+    snake[i].x = SCREEN_WIDTH / 2 / SNAKE_SIZE - i;
+    snake[i].y = SCREEN_HEIGHT / 2 / SNAKE_SIZE;
+  }
+  placeFood();
+}
+void moveSnake() {
+  int joyX = analogRead(JOYSTICK_X);
+  int joyY = analogRead(JOYSTICK_Y);
+
+  if (joyX < 1900) { // Left
+    xDir = 1;
+    yDir = 0;
+  }
+  else if (joyX > 2200) { // Right
+    xDir = -1;
+    yDir = 0;
+  }
+  else if (joyY < 1900) { // Up
+    xDir = 0;
+    yDir = 1;
+  }
+  else if (joyY > 2200) { // Down
+    xDir = 0;
+    yDir = -1;
+  }
+
+  // Move the snake body
+  for (int i = snakeLength - 1; i > 0; i--) {
+    snake[i] = snake[i - 1];
+  }
+  
+  // Update head position
+  snake[0].x += xDir;
+  snake[0].y += yDir;
+
+  // Screen wrap around
+  if (snake[0].x < 0) snake[0].x = SCREEN_WIDTH / SNAKE_SIZE - 1;
+  if (snake[0].x >= SCREEN_WIDTH / SNAKE_SIZE) snake[0].x = 0;
+  if (snake[0].y < 0) snake[0].y = SCREEN_HEIGHT / SNAKE_SIZE - 1;
+  if (snake[0].y >= SCREEN_HEIGHT / SNAKE_SIZE) snake[0].y = 0;
+
+  // Check food collision
+  if (snake[0].x == food.x && snake[0].y == food.y) {
+    foodEaten++;
+    snakeLength++;
+    if (snakeLength < SNAKE_MAX_LENGTH)
+      snake[snakeLength - 1] = food; // Add new segment
+    placeFood();
+  }
+}
+
+void drawGame() {
+  display.clearDisplay();
+  
+  // Draw food
+  display.fillRect(food.x * SNAKE_SIZE, food.y * SNAKE_SIZE, SNAKE_SIZE, SNAKE_SIZE, SH110X_WHITE);
+  
+  // Draw snake
+  for (int i = 0; i < snakeLength; i++) {
+    display.fillRect(snake[i].x * SNAKE_SIZE, snake[i].y * SNAKE_SIZE, SNAKE_SIZE, SNAKE_SIZE, SH110X_WHITE);
+  }
+
+  display.display();
+}
+
+void placeFood() {
+  food.x = random(SCREEN_WIDTH / SNAKE_SIZE);
+  food.y = random(SCREEN_HEIGHT / SNAKE_SIZE);
+}
+
+void drawDrawing() {
+  display.clearDisplay();
+  display.drawPixel(cursor.x, cursor.y, SH110X_WHITE); // Start with a single pixel at the center
+  display.display();
+}
+
+// Assume these global variables or add them accordingly
+int cursorX = SCREEN_WIDTH / 2;
+int cursorY = SCREEN_HEIGHT / 2;
+int lastCursorX = cursorX;
+int lastCursorY = cursorY;
+
+void updateDrawing() {
+    int joyX = analogRead(JOYSTICK_X);
+    int joyY = analogRead(JOYSTICK_Y);
+
+    // Check joystick X-axis for left or right movement
+    if (joyX > JOYSTICK_CENTER - JOYSTICK_DEADZONE) {
+        cursorX = max(0, cursorX - 1); // Move left
+    } else if (joyX < JOYSTICK_CENTER + JOYSTICK_DEADZONE) {
+        cursorX = min(SCREEN_WIDTH - 1, cursorX + 1); // Move right
+    }
+
+    // Check joystick Y-axis for up or down movement
+    if (joyY > JOYSTICK_CENTER + JOYSTICK_DEADZONE) {
+        cursorY = max(0, cursorY - 1); // Move up
+    } else if (joyY < JOYSTICK_CENTER - JOYSTICK_DEADZONE) {
+        cursorY = min(SCREEN_HEIGHT - 1, cursorY + 1); // Move down
+    }
+
+    // Read the button state
+    bool buttonPressed = digitalRead(BUTTON_PIN) == LOW;  // Assuming active-low button
+
+    // Draw the cursor and/or pixel if needed
+    if (buttonPressed) {
+        display.drawPixel(cursorX, cursorY, SH110X_WHITE);
+    }
+
+    // Refresh only the areas that have changed to optimize performance
+    if (lastCursorX != cursorX || lastCursorY != cursorY || buttonPressed) {
+        // Optional: Update a larger part or the whole display if drawing seems inconsistent
+        display.display();
+    }
+
+    // Update last known positions
+    lastCursorX = cursorX;
+    lastCursorY = cursorY;
+}
+
