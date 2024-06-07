@@ -1,5 +1,5 @@
 # BMO_handheld
-A bmo handheld device with a joystick and an oled screen
+A bmo handheld device with a joystick and an oled screen, there are currently 4 options to choose from. 1) bmo static face 2) snake game 3)brick destroyer 4) drawing 
 
 Components used:
 
